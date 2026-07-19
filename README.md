@@ -2,16 +2,19 @@
 
 ## Project Summary
 
-In this project you will build and explain a small music recommender system.
+**VibeCheck 1.0** is a small music recommender that turns a listener's taste into a ranked
+list of songs. You describe your taste as a profile — a favorite genre, a favorite mood,
+and target values like energy — and the system scores all 18 songs in the catalog, then
+returns the top 5 with a plain-language reason for each pick.
 
-Your goal is to:
+Under the hood it's a transparent points system: songs earn points for matching your genre
+and mood, plus points for how *close* their audio features (energy, tempo, acousticness,
+and more) are to your targets. This project builds that scoring rule, runs it against
+several taste profiles (including deliberately tricky ones), and evaluates what the system
+gets right, where it's biased, and how a pile of simple arithmetic can still "feel" like a
+real recommendation.
 
-- Represent songs and a user "taste profile" as data
-- Design a scoring rule that turns that data into recommendations
-- Evaluate what your system gets right and wrong
-- Reflect on how this mirrors real world AI recommenders
-
-Replace this paragraph with your own summary of what your version does.
+Full write-up of the design, evaluation, and biases lives in the [Model Card](model_card.md).
 
 ---
 
@@ -212,25 +215,53 @@ As expected, *Sunrise City* (pop, happy, energy 0.82) wins outright — it's the
 
 ## Experiments You Tried
 
-Use this section to document the experiments you ran. For example:
+### Sensitivity test: double energy weight, halve genre weight
 
-- What happened when you changed the weight on genre from 2.0 to 0.5
-- What happened when you added tempo or valence to the score
-- How did your system behave for different types of users
+To probe how sensitive the rankings are to the weighting, I temporarily changed two
+weights in `recommender.py` — **energy ×2.0 → ×4.0** and **genre +2.0 → +1.0** — then
+re-ran all profiles and compared the top-5s to the baseline. (The math stays valid: the
+energy closeness score is still in `[0,1]`, floored at 0, so the term just spans `[0, 4.0]`
+instead of `[0, 2.0]`; genre is still a flat non-negative bonus.)
+
+| Profile | Baseline top-5 | After weight shift | Change |
+|---|---|---|---|
+| High-Energy Pop | Sunrise City, Gym Hero, Rooftop Lights, Pulse Reactor, **Night Drive Loop** | Sunrise City, Gym Hero, Rooftop Lights, Pulse Reactor, **Concrete Kingdom** | #5 swapped |
+| Chill Lofi | Library Rain, Midnight Coding, Focus Flow, Spacewalk Thoughts, Paper Boats | *(identical order)* | none |
+| Deep Intense Rock | Storm Runner, Gym Hero, Iron Verdict, Pulse Reactor, Concrete Kingdom | *(identical order)* | none |
+
+**More accurate, or just different?** Mostly **neither — the system was surprisingly
+insensitive to this change.** Two of the three profiles didn't reorder at all, because in
+this catalog *genre and energy are correlated*: lofi songs are already low-energy and rock
+songs are already high-energy, so shifting weight between the two features rewards the same
+songs. The scores inflated (e.g. Storm Runner 8.88 → 9.86) but the *ranking* held.
+
+The one change was **slightly less accurate**, not more: in High-Energy Pop, doubling
+energy pushed **Concrete Kingdom** (hip hop, *aggressive*, energy 0.88) into #5, displacing
+the gentler synthwave *Night Drive Loop*. Prioritizing raw energy over genre pulled an
+off-vibe aggressive track toward a "happy pop" listener — exactly the failure mode you'd
+expect when a loudness proxy outweighs intent. Takeaway: the original 2.0/2.0 balance is
+well-chosen, and the correlation between genre and energy in the data makes the top of each
+list robust to moderate weight changes. The change was reverted after testing.
 
 ---
 
 ## Limitations and Risks
 
-Summarize some limitations of your recommender.
+- **Tiny catalog.** Only 18 songs, most genres appear just once, so there's little variety
+  and a single-genre fan gets one real match and a lot of near-misses.
+- **The "energy gap" underserves middle-of-the-road listeners.** The catalog's energy
+  values clump at the low and high ends (only 3 of 18 songs sit in the middle), so a
+  moderate-energy listener gets a flat, incoherent list pulled from both extremes.
+- **It never says "no."** An impossible mood, an unknown genre, or an empty profile still
+  returns a confident top-5 instead of flagging that the request couldn't be satisfied.
+- **Hidden loudness bias.** When no real signal is present, the energy tie-break quietly
+  makes the loudest songs win — "louder" becomes "better" by default.
+- **Exact-match only.** `indie pop` earns no credit toward `pop`, and `intense` gets nothing
+  from `aggressive` or `tense`, so sub-genre and synonym listeners are penalized by labels.
+- **No understanding of music.** It ignores lyrics, language, artist, and popularity, and
+  with no listening history the same profile always returns the same list.
 
-Examples:
-
-- It only works on a tiny catalog
-- It does not understand lyrics or language
-- It might over favor one genre or mood
-
-You will go deeper on this in your model card.
+The [Model Card](model_card.md) goes deeper on these, with data-grounded examples.
 
 ---
 
@@ -240,10 +271,36 @@ Read and complete `model_card.md`:
 
 [**Model Card**](model_card.md)
 
-Write 1 to 2 paragraphs here about what you learned:
+Building this made a recommender feel a lot less magical. At its core it's just a scoring
+rule plus a sort: you turn a vague idea like "chill lofi" into numbers, give each song
+points for how well it matches, and show the highest scorers. There's no "understanding" of
+music anywhere in it, yet asking for intense rock returns exactly the songs I'd pick. That
+was the big lesson — a lot of what feels like intelligence is really careful scoring on top
+of good data, and the *weights* I chose quietly decided which songs won.
 
-- about how recommenders turn data into predictions
-- about where bias or unfairness could show up in systems like this
+It also showed me how easily bias sneaks in. My system favored loud songs whenever it ran
+out of real signal, underserved listeners who wanted middle-of-the-road energy, and
+penalized anyone whose taste didn't match the catalog's exact labels. None of that was
+intentional — it fell out of the data's shape and my scoring choices. Now when I use a real
+music app, I think about what it's scoring, what data it's missing, and who it might be
+leaving out.
 
+### Intuition check: do the results "feel" right?
+
+I compared the **Chill Lofi** profile's top-5 against my own musical intuition, and it
+holds up. The top three are literal lofi study tracks ("Midnight Coding," "Focus Flow"),
+and I especially liked that #4–5 were *ambient* and *folk* — not lofi, but exactly the
+quiet, acoustic, low-energy neighbors a lofi listener drifts into. The system found them
+on audio features alone, with no genre match, which mirrors how real taste blurs across
+genre lines.
+
+Digging into *why Library Rain ranked #1*, the deciding factor was a single term: its
+energy (0.35) sits **exactly** on the profile's target, earning the full +2.00, while its
+near-twin *Midnight Coding* (energy 0.42) lands ~0.19 behind. Both are equally "correct"
+lofi answers, so the #1-vs-#2 order is essentially a coin-flip on a difference no listener
+would notice — a good reminder that a precise-looking score can hide a near-tie. I also
+ran a "same song at the top of every list" check: across the three well-formed profiles
+I got three *different* #1s (Sunrise City, Library Rain, Storm Runner), which tells me the
+genre weight (+2.0) is strong but not *overpowering* — the catalog still produces variety.
 
 
