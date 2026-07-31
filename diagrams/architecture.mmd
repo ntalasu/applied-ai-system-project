@@ -1,0 +1,52 @@
+%%{init: {"flowchart": {"htmlLabels": true}} }%%
+flowchart TD
+    A1["Input A: free-text taste request\n(e.g. pump me up before a workout)"] --> B1
+    A2["Input B: structured taste profile\n(PROFILES dict in main.py)"] --> C2
+
+    subgraph RAGPARSE["RAG Step 1 - Parse (AI)"]
+        B1["parse_taste_description()"] --> B2{"ANTHROPIC_API_KEY set\nand call succeeds?"}
+        B2 -->|"yes"| B3["Claude API call\nJSON-schema constrained output"]
+        B2 -->|"no / error"| B4["Keyword fallback parser"]
+        B3 --> B5["_sanitize_profile()\nguardrail: clamp or drop invalid\ngenre, mood, numeric values"]
+        B4 --> B5
+        B3 --> B6["confidence score (0-1)\nLLM self-assessed / fallback coverage proxy"]
+        B4 --> B6
+    end
+
+    B5 --> C2
+
+    subgraph RETRIEVAL["Retrieval - deterministic scorer"]
+        C1[("data/songs.csv catalog")]
+        C2["score_song / recommend_songs"]
+        C1 --> C2
+        C2 --> C3["Ranked (song, score, reasons) results"]
+    end
+
+    C3 --> D1
+
+    subgraph RAGGEN["RAG Step 2 - Generate (AI)"]
+        D1["generate_explanation()"] --> D2{"ANTHROPIC_API_KEY set\nand call succeeds?"}
+        D2 -->|"yes"| D3["Claude API call\ngrounded ONLY in retrieved results"]
+        D2 -->|"no / error"| D4["Rule-based fallback summary"]
+    end
+
+    D3 --> E1["Console output:\nranked recommendation list"]
+    D4 --> E1
+
+    subgraph CHECKS["Reliability, testing & human review"]
+        F1["tests/test_recommender.py\nscorer unit tests"]
+        F2["tests/test_nl_interface.py\nfallback + sanitization tests"]
+        F3["try/except + logging\naround every API call"]
+        F4["model_card.md\nhuman-authored bias & limitation review"]
+        F5["src/reliability.py +\ntests/test_reliability.py +\nscripts/reliability_report.py\npass/fail table + avg confidence"]
+    end
+
+    F1 -.->|verifies| C2
+    F2 -.->|verifies| B1
+    F2 -.->|verifies| B5
+    F2 -.->|verifies| D1
+    F3 -.->|wraps| B3
+    F3 -.->|wraps| D3
+    F4 -.->|audits| C2
+    F5 -.->|measures| B1
+    F5 -.->|measures| B6

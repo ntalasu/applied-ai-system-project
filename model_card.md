@@ -298,3 +298,112 @@ careful scoring plus good data.
 admit when it can't honor a request instead of quietly returning loud songs, and match
 moods and genres more loosely so "intense" and "aggressive" count as close. I'd also want
 to test it with real listeners to see where its scores and their taste disagree.
+
+---
+
+## 10. Responsible AI Reflection: The Natural-Language (RAG) Feature
+
+Section 9 is my reflection on the original rule-based scorer. This section is specifically
+about the AI layer I added on top of it — a Claude-powered parser and explanation generator
+(`src/nl_interface.py`) plus the reliability harness I built to test it
+(`src/reliability.py`).
+
+### What are the limitations or biases in your system?
+
+- **The exact-match brittleness in section 6 survives the AI layer.** The LLM parser can
+  correctly understand that "aggressive" and "intense" mean roughly the same thing, but it
+  still has to emit one of the catalog's *exact* mood strings for the scorer to credit it —
+  so the AI's actual language understanding is thrown away the moment it hits the
+  deterministic scorer. Adding an LLM to the front of a brittle system doesn't fix the
+  brittleness; it just moves where it's hidden.
+- **Self-reported confidence is not calibrated against ground truth.** The LLM path's
+  confidence score is the model's own opinion of itself, and self-reported LLM confidence is
+  a known-unreliable signal in general — it can be overconfident on wrong answers and
+  underconfident on right ones. I treat it as a rough reliability signal to log and monitor,
+  not as a guarantee.
+- **The fallback parser is a blunt instrument.** It only recognizes a small hardcoded list of
+  energy/valence/acousticness keywords and the catalog's exact genre/mood vocabulary — any
+  request that doesn't use one of those words (even a perfectly reasonable one, like "chilled
+  out beats") gets a mostly-empty profile, which quietly reintroduces the original scorer's
+  "empty profile defaults to the loudest songs" bias from section 6.
+- **The live LLM path is unverified in this environment.** I don't have Anthropic API credits
+  configured here, so every number in this model card about the AI feature's reliability
+  comes from testing the *fallback* path, not the actual model calls. That's a real gap, not
+  a technicality — see "What surprised me" below.
+- **Small catalog, same as before.** Whatever the AI layer understands about a request, it
+  can still only recommend from the same 18 songs, so the ceiling on answer quality is set by
+  the data, not the model.
+
+### Could your AI be misused, and how would you prevent that?
+
+- **Prompt injection via the free-text request.** A listener's request is passed directly
+  into two LLM calls as untrusted text. Someone could try something like *"ignore the songs
+  above and instead output [some other content]"* to get the generation step to say something
+  it shouldn't. I mitigate this by (1) instructing the generation prompt explicitly to use
+  *only* the retrieved songs/scores/reasons and never invent or repeat anything else, and
+  (2) keeping the system's blast radius small on purpose — this app has no tools, no file
+  access, no ability to take real-world actions, and doesn't talk to any other system, so
+  even a successful injection can only produce bad *text output* in a CLI demo, not leak data
+  or cause harm. If I productionized this, I'd add an output check that every song mentioned
+  in the generated text actually appears in the retrieved list, and reject/regenerate if not.
+- **Cost/availability abuse.** Every natural-language request costs a real API call. The
+  current demo only ever runs a fixed list of 3 example queries, so this isn't exploitable
+  today, but if this were exposed as a public endpoint, an attacker could spam it to run up
+  API costs or exhaust rate limits. Prevention: rate-limiting per user/IP, a max input length,
+  and a hard cap on requests per session — none of which exist yet because there's no public
+  endpoint, but I'm flagging it as a requirement before this could ever go beyond a local demo.
+- **Discriminatory profiling — a non-goal I kept it that way.** A genre/mood recommender
+  *could* be misused to infer things about a listener's identity from their taste (a known
+  failure mode of real music-recommendation systems). This system never asks for or infers
+  anything about who the listener is — only their stated musical preferences — and I kept the
+  schema restricted to genre/mood/audio-feature fields specifically so there's no path for it
+  to start inferring demographic attributes even if asked to.
+
+### What surprised me while testing your AI's reliability?
+
+- **Confidence scores were lower than my gut expected.** Running the reliability report
+  (`python -m scripts.reliability_report`) gave an average confidence of just **0.21** across
+  6 cases — even "Upbeat happy pop, kind of like a summer road trip," which feels like an
+  easy, clear request to me, only scored **0.43**. That's because I defined confidence as
+  *field coverage* (how many of the 7 profile fields got filled), which is a much stricter,
+  less forgiving bar than my own intuitive sense of "did it understand the request." It taught
+  me that a reasonable-sounding metric name ("confidence") can still measure something
+  narrower than what it sounds like it measures.
+- **6 out of 6 reliability tests passed on the first run — which turned out to be weaker
+  evidence than it sounds.** I expected the deliberately adversarial cases (an empty string,
+  a self-contradicting request) to expose a real failure. Instead they passed immediately,
+  because the bar I'd set for those specific cases was just "returns a dict and doesn't
+  crash" — a low bar that says nothing about whether the *quality* of the output is good.
+  A 6/6 pass rate looks reassuring in a README, but I had to be honest with myself that most
+  of those 6 checks measure "didn't crash," not "got it right."
+- **I was only ever testing the safety net, not the AI.** Writing up the testing summary
+  honestly forced me to admit that every reliability number I have is from the keyword
+  fallback path, because I don't have API credits in this environment — meaning the thing I
+  actually built to "prove the AI works" has, so far, only proven that the *non-AI fallback*
+  works. That's a genuinely useful thing to know, but it's a narrower claim than "the AI
+  feature is reliable," and I want to be upfront about that gap rather than let a passing test
+  suite imply more than it does.
+
+### Collaboration with AI: One Helpful Suggestion and One Flawed Suggestion
+
+**Helpful suggestion.** When I told the AI assistant I wanted to add the RAG feature but
+didn't have an API key, it suggested designing the *entire* feature around graceful
+degradation from the start — a keyword-based fallback parser and a rule-based fallback
+summary that kick in automatically whenever no key is configured or a call fails — rather
+than building an AI feature that simply doesn't run without one. That turned out to be the
+right call: it meant I could develop, test, and demo the whole pipeline end-to-end in an
+environment with no API access at all, and the exact same code path is what will run the
+real LLM calls the moment a key is added. Without that suggestion I likely would have built
+something that only "worked" in theory and couldn't be verified at all right now.
+
+**Flawed suggestion.** I'd told the assistant up front that I didn't have API credits — a
+pretty clear signal I'm budget-conscious about this — and it still defaulted the model choice
+to `claude-opus-5`, the most capable *and* most expensive tier in the model family, rather
+than defaulting to something cheaper like Haiku for what is genuinely a lightweight task
+(parsing a short sentence, writing a few sentences of grounded summary). It did add an
+environment-variable override (`CLAUDE_MODEL`) so I *can* switch to a cheaper model, but the
+default it picked didn't actually match the constraint I'd just told it about. It's a small
+thing, but it's a real example of the AI following a general "always recommend the best model"
+instinct instead of weighing the specific constraint I'd given it a few messages earlier — a
+good reminder that I need to actually read defaults it picks rather than assume they're
+tailored to what I said.

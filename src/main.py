@@ -9,7 +9,13 @@ You will implement the functions in recommender.py:
 - recommend_songs
 """
 
+import logging
+
 from src.recommender import load_songs, recommend_songs
+from src.nl_interface import generate_explanation, parse_taste_description
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
 # Distinct taste profiles plus adversarial / edge-case profiles used to
@@ -88,10 +94,59 @@ def print_recommendations(name: str, user_prefs: dict, songs: list, k: int = 5) 
     print()
 
 
+# Free-text taste descriptions for the natural-language (RAG) mode. Unlike
+# PROFILES above, these aren't pre-structured — the system has to figure out
+# genre/mood/energy targets from plain English before it can even call the
+# recommender.
+NL_QUERIES = [
+    "I want something to pump me up before a workout, high energy and loud",
+    "Something mellow and acoustic for a rainy afternoon of studying",
+    "Upbeat happy pop, kind of like a summer road trip",
+]
+
+
+def run_natural_language_mode(songs: list) -> None:
+    """
+    Demonstrates the RAG layer: parse a free-text request into a taste
+    profile (retrieval query), score/rank the catalog against it (retrieval),
+    then have the model write a recommendation grounded in those retrieved
+    results rather than just printing them.
+    """
+    known_genres = sorted({song["genre"] for song in songs})
+    known_moods = sorted({song["mood"] for song in songs})
+
+    print(f"\n{'#' * 64}")
+    print("# Natural Language Mode (RAG)")
+    print(f"{'#' * 64}")
+
+    for query in NL_QUERIES:
+        print(f"\nRequest: \"{query}\"")
+        try:
+            profile, used_llm, confidence = parse_taste_description(query, known_genres, known_moods)
+        except Exception:
+            logger.exception("Failed to parse taste description; skipping this request")
+            continue
+
+        mode = "LLM" if used_llm else "keyword fallback"
+        print(f"Parsed profile ({mode}, confidence={confidence:.2f}): {profile}")
+
+        recommendations = recommend_songs(profile, songs, k=3)
+        try:
+            explanation = generate_explanation(query, recommendations)
+        except Exception:
+            logger.exception("Failed to generate explanation; skipping this request")
+            continue
+
+        print(explanation)
+    print()
+
+
 def main() -> None:
     songs = load_songs("data/songs.csv")
     for name, prefs in PROFILES.items():
         print_recommendations(name, prefs, songs)
+
+    run_natural_language_mode(songs)
 
 
 if __name__ == "__main__":
