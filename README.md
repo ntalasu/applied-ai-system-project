@@ -124,11 +124,17 @@ flowchart TD
 
    Without a key, the app still runs end-to-end using the rule-based fallback described below.
 
-4. Run the app:
+4. Run the app — either as a CLI or as a web UI:
 
    ```bash
-   python -m src.main
+   python -m src.main          # CLI: runs all demo profiles + the NL mode, then exits
+   streamlit run app.py        # Web UI: interactive, opens in your browser
    ```
+
+   The Streamlit UI (`app.py`) is a thin wrapper — three tabs (structured profile, natural-language/RAG,
+   and a live reliability report) that call the exact same functions as the CLI. It also has an
+   `ANTHROPIC_API_KEY` field in the sidebar, so you can paste in a key for the session without exporting
+   an environment variable (it's kept in memory only, never written to disk).
 
 5. Run the test suite:
 
